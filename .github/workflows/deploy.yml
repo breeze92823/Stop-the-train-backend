@@ -6,12 +6,17 @@ on:
   pull_request:
     branches: [dev, main]
   workflow_dispatch:
+    inputs:
+      target:
+        description: Legion target to deploy to (runs only that target)
+        type: choice
+        options: [staging, prod]
+        default: staging
 
 env:
   REGISTRY: ghcr.io
   # Repo variable, set under Settings -> Secrets and variables -> Actions -> Variables.
-  # Must match the lowercase game ID created on the Bloxity "My Games" dashboard
-  # (the client's GAME_SLUG in src/config.js: boat-race-with-99-engine).
+  # Must match the lowercase game ID created on the Bloxity "My Games" dashboard.
   GAME_ID: ${{ vars.LEGION_GAME_ID || secrets.LEGION_GAME_ID }}
 
 jobs:
@@ -29,24 +34,58 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  # Which Legion targets to deploy: prod always; staging too when LEGION_DEPLOY_TOKEN_STAGE exists.
+  # A manual run deploys only the chosen target.
+  targets:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.pick.outputs.targets }}
+    steps:
+      - id: pick
+        env:
+          HAS_STAGE: ${{ secrets.LEGION_DEPLOY_TOKEN_STAGE != '' }}
+          INPUT_TARGET: ${{ github.event.inputs.target }}
+        run: |
+          if [ -n "${INPUT_TARGET}" ]; then
+            echo "targets=[\"${INPUT_TARGET}\"]" >> "$GITHUB_OUTPUT"
+          elif [ "${HAS_STAGE}" = "true" ]; then
+            echo 'targets=["prod","staging"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'targets=["prod"]' >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
     # Pull requests only run the tests above; deploys happen on push / manual run.
     if: github.event_name != 'pull_request'
-    needs: test
+    needs: [test, targets]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.targets) }}
+    # The GHCR package must be made public (GitHub -> Packages -> <game>-server -> Package
+    # settings -> Change visibility -> Public), or the Legion cluster cannot pull the image.
     permissions:
       contents: read
       packages: write
+    env:
+      TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set deploy channel
+      - name: Set deploy channel and Legion target
         id: channel
         run: |
           if [ "${{ github.ref_name }}" = "main" ]; then
             echo "channel=prod" >> "$GITHUB_OUTPUT"
           else
             echo "channel=dev" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "${TARGET}" = "staging" ]; then
+            echo "legion_url=https://legion.stage.bloxity.io" >> "$GITHUB_OUTPUT"
+          else
+            echo "legion_url=https://legion.bloxity.io" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Validate required config
@@ -55,12 +94,19 @@ jobs:
             echo "::error::LEGION_GAME_ID is not set (Settings > Secrets and variables > Actions > Variables)."
             exit 1
           fi
-          if [ -z "${LEGION_DEPLOY_TOKEN}" ]; then
+          # Each target uses its own token; staging never falls back to the prod token.
+          if [ "${TARGET}" = "staging" ]; then
+            if [ -z "${LEGION_DEPLOY_TOKEN_STAGE}" ]; then
+              echo "::error::Repo secret LEGION_DEPLOY_TOKEN_STAGE is not set (needed for the staging target)."
+              exit 1
+            fi
+          elif [ -z "${LEGION_DEPLOY_TOKEN}" ]; then
             echo "::error::Repo secret LEGION_DEPLOY_TOKEN is not set (Settings > Secrets and variables > Actions > Secrets)."
             exit 1
           fi
         env:
           LEGION_DEPLOY_TOKEN: ${{ secrets.LEGION_DEPLOY_TOKEN }}
+          LEGION_DEPLOY_TOKEN_STAGE: ${{ secrets.LEGION_DEPLOY_TOKEN_STAGE }}
 
       - name: Normalize image name to lowercase
         run: |
@@ -74,12 +120,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # One image tag per target: <channel>-<target>-<sha>.
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.GAME_ID }}-server:${{ steps.channel.outputs.channel }}-${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.GAME_ID }}-server:${{ steps.channel.outputs.channel }}-${{ matrix.target }}-${{ github.sha }}
 
       # roomSize = players per room (WorldRoom's maxClients, ROOM_MAX_CLIENTS in src/constants.ts);
       # the Bloxity matchmaker picks the pod capacity itself, so no seatCap is sent.
@@ -90,10 +137,17 @@ jobs:
             echo "::error::Could not read ROOM_MAX_CLIENTS from src/constants.ts."
             exit 1
           fi
-          curl -sSf -X POST "https://legion.bloxity.io/v1/apps/${GAME_ID}/deploy" \
-            -H "Authorization: Bearer ${LEGION_DEPLOY_TOKEN}" \
+          if [ "${TARGET}" = "staging" ]; then TOKEN="${LEGION_DEPLOY_TOKEN_STAGE}"; else TOKEN="${LEGION_DEPLOY_TOKEN}"; fi
+          if [ -z "${TOKEN}" ]; then
+            echo "::error::No deploy token for target ${TARGET}."
+            exit 1
+          fi
+          curl -sSf -X POST "${LEGION_URL}/v1/apps/${GAME_ID}/deploy" \
+            -H "Authorization: Bearer ${TOKEN}" \
             -H 'Content-Type: application/json' \
-            -d "{\"channel\":\"${CHANNEL}\",\"image\":\"${REGISTRY}/${OWNER}/${GAME_ID}-server:${CHANNEL}-${{ github.sha }}\",\"version\":\"${{ github.sha }}\",\"roomSize\":${ROOM_SIZE}}"
+            -d "{\"channel\":\"${CHANNEL}\",\"image\":\"${REGISTRY}/${OWNER}/${GAME_ID}-server:${CHANNEL}-${TARGET}-${{ github.sha }}\",\"version\":\"${{ github.sha }}\",\"roomSize\":${ROOM_SIZE}}"
         env:
           LEGION_DEPLOY_TOKEN: ${{ secrets.LEGION_DEPLOY_TOKEN }}
+          LEGION_DEPLOY_TOKEN_STAGE: ${{ secrets.LEGION_DEPLOY_TOKEN_STAGE }}
+          LEGION_URL: ${{ steps.channel.outputs.legion_url }}
           CHANNEL: ${{ steps.channel.outputs.channel }}
