@@ -51,7 +51,7 @@ export const LEGION_PREFIX = "legion_";
 
 // Bloxity game slug used in verify calls; the env BLOXITY_GAME_ID wins. PLACEHOLDER until the
 // real game is created on the dashboard.
-export const GAME_SLUG_DEFAULT = "climb-and-slide-for-eggs";
+export const GAME_SLUG_DEFAULT = "stop-the-train";
 export const BLOXITY_API_DEFAULT = "https://api.bloxity.io";
 export const BLOXITY_TIMEOUT_MS = 5000;
 
