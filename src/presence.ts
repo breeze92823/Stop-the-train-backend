@@ -10,7 +10,8 @@ const isId = (v: unknown): v is string => typeof v === "string" && ID_PATTERN.te
 
 export const VY_MAX = 200;
 export const BENCH_MAX = 63;
-export const CARRY_MAX_LEN = 120;
+export const CARRY_MAX_COUNT = 8; // vehicles stacked in the hands (the Carry upgrade tops out at 5)
+export const CARRY_MAX_LEN = 600;
 export const CARRY_VARIANTS = ["normal", "golden", "emerald"] as const;
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
@@ -28,19 +29,28 @@ export function applyPose(p: PlayerState, msg: unknown): void {
   if (finite(m.vy)) p.vy = clamp(m.vy, -VY_MAX, VY_MAX);
 }
 
-// `carry` { spec: { type, paint, variant } | null } -> the stored string: sanitized fields,
-// re-serialised ("" = nothing carried). Never the raw input.
-export function carryString(spec: unknown): string {
-  if (!spec || typeof spec !== "object") return "";
+function cleanVehicle(spec: unknown): { type: string; paint: string; variant: string } | null {
+  if (!spec || typeof spec !== "object") return null;
   const s = spec as Record<string, unknown>;
-  if (!isId(s.type)) return "";
+  if (!isId(s.type)) return null;
   const paint = typeof s.paint === "string" && HEX.test(s.paint) ? s.paint.toLowerCase() : "#ffffff";
   const variant = (CARRY_VARIANTS as readonly unknown[]).includes(s.variant) ? (s.variant as string) : "normal";
-  const out = JSON.stringify({ type: s.type, paint, variant });
+  return { type: s.type, paint, variant };
+}
+
+// `carry` { specs: [{ type, paint, variant }, ...] (bottom first) | spec: one } -> the stored string:
+// sanitized fields, re-serialised ("" = nothing carried; one vehicle is a plain object, several an array).
+// Never the raw input.
+export function carryString(input: unknown): string {
+  const list = (Array.isArray(input) ? input : [input]).slice(0, CARRY_MAX_COUNT);
+  const clean = list.map(cleanVehicle).filter((v) => v !== null);
+  if (!clean.length) return "";
+  const out = JSON.stringify(clean.length === 1 ? clean[0] : clean);
   return out.length <= CARRY_MAX_LEN ? out : "";
 }
 export function applyCarry(p: PlayerState, msg: unknown): void {
-  p.carry = carryString((msg as { spec?: unknown })?.spec);
+  const m = msg as { spec?: unknown; specs?: unknown };
+  p.carry = carryString(Array.isArray(m?.specs) ? m.specs : m?.spec);
 }
 
 // `train` { bench: int 0..63 | -1, rep: 0..1 }: -1 stops training.

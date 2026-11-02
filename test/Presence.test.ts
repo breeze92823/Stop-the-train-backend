@@ -4,7 +4,7 @@ import type { ColyseusTestServer } from "@colyseus/testing";
 import type appConfig from "../src/app.config.js";
 import { WorldState } from "../src/rooms/schema/WorldState.js";
 import { AVATAR_MAX_LEN, POSE_BOUNDS } from "../src/constants.js";
-import { carryString, VY_MAX } from "../src/presence.js";
+import { carryString, CARRY_MAX_COUNT, VY_MAX } from "../src/presence.js";
 import { sleep } from "./fakePlayers.js";
 import { testServer } from "./server.js";
 
@@ -66,6 +66,22 @@ describe("presence", () => {
     a.send("carry", { spec: null });
     await sleep(60);
     assert.strictEqual(p.carry, "");
+  });
+
+  it("relays a stack of carried vehicles, bottom first, bounded", async () => {
+    const one = { type: "bus", paint: "#00ff00", variant: "emerald" };
+    assert.deepStrictEqual(JSON.parse(carryString([one, { type: "Bad Id!" }, { type: "car" }])), [one, { type: "car", paint: "#ffffff", variant: "normal" }]);
+    assert.deepStrictEqual(JSON.parse(carryString([one])), one);
+    assert.strictEqual(carryString([]), "");
+    assert.strictEqual(JSON.parse(carryString(Array.from({ length: 40 }, () => one))).length, CARRY_MAX_COUNT);
+
+    const room = await colyseus.createRoom<WorldState>("world", {});
+    const a = await colyseus.connectTo(room, { userId: "guest-a" });
+    await sleep(50);
+    const p = room.state.players.get(a.sessionId)!;
+    a.send("carry", { spec: one, specs: [one, { type: "car", paint: "#112233", variant: "golden" }] });
+    await sleep(60);
+    assert.deepStrictEqual(JSON.parse(p.carry), [one, { type: "car", paint: "#112233", variant: "golden" }]);
   });
 
   it("bounds training and relays emotes with a replay counter", async () => {

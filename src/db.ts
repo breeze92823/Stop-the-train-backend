@@ -18,13 +18,16 @@ export interface PlayerDoc {
   rebirths?: number;
   breaks?: number; // trains derailed
   robux?: number; // Robux spent
+  strength?: number; // highest Strength ever reached (power resets on rebirth)
   powerMult?: number; // >= 1
   levels?: Record<string, number>; // upgradeId -> level (magnet, carry, cooldown, fuse, walkspeed)
   dailyAt?: number; // unix s
   dailyDay?: number;
-  chestAt?: number; // unix s
+  chestAt?: number; // unix s (legacy: replaced by chestPlay)
+  chestPlay?: number; // s played toward the free coins chest; written only by the server, never by saveProgress
   updateEnds?: number; // unix s
   seeded?: boolean;
+  muted?: boolean; // sound switched off
   lastSeen?: number; // epoch ms of the last activity
   playtime?: number; // s with the game visible
   carriedFrom?: string; // legacy id this doc was copied from (carry-over)
