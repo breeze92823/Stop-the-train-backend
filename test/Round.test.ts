@@ -59,7 +59,7 @@ describe("shared Round", () => {
     assert.strictEqual(round.phase, "wreck");
   });
 
-  it("lets the train through when HP is short and keeps its damage", () => {
+  it("lets the train through when HP is short and sends a fresh train", () => {
     const { round, log, advance } = setup();
     round.park("a", { id: "v1", spec: spec(1000), x: 10, halfLen: 2 });
     advance(ROUND.firstCountdown + 1);
@@ -68,8 +68,8 @@ describe("shared Round", () => {
     advance(10);
     const gone = log.find((l) => l.type === "gone")!;
     assert.strictEqual(gone.payload.result, "through");
-    assert.strictEqual(round.hp, TRAIN_TABLE[0].hp - 1000);
-    assert.ok(round.back);
+    assert.strictEqual(round.hp, round.train.hp);
+    assert.ok(!round.back);
     assert.strictEqual(round.phase, "countdown");
   });
 });

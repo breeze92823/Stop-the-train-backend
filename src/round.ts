@@ -149,12 +149,10 @@ export class Round {
   }
 
   private endRun(result: "stopped" | "through") {
-    if (result === "stopped") {
-      this.idx = this.pickTrain();
-      this.hp = this.train.hp;
-      this.back = false;
-      this.doubled = this.rng() < ROUND.doubleChance;
-    } else this.back = true;
+    this.idx = this.pickTrain();
+    this.hp = this.train.hp;
+    this.back = false;
+    this.doubled = this.rng() < ROUND.doubleChance;
     this.phase = "countdown";
     this.endsAt = this.now() + ROUND.countdown * 1000;
     this.emit("gone", { result, ...this.snapshot() });
