@@ -4,24 +4,23 @@ import { schema, t, type SchemaType } from "@colyseus/schema";
 // To sync something new about a player, add a field here and accept it in a WorldRoom message.
 export const PlayerState = schema(
   {
-    username: t.string().default(""), // client-reported Bloxity displayName/username, not validated
-    signedIn: t.boolean().default(false), // has a Bloxity id: only signed-in players are saved
-    pfp: t.string().default(""), // Bloxity profile picture URL ("" = none), for the others' racer heads
-    racing: t.boolean().default(false), // in a race right now (`race` message)
-    distance: t.float64().default(0), // this race's distance so far, studs
-    // Presence (presence.ts, `pose` / `loadout` / `setAvatar`): what the others draw in the world.
-    x: t.float64().default(0), // feet position in track coordinates (z minus the race scroll)
+    username: t.string().default(""), // verified Bloxity name when signed in, else the client's
+    signedIn: t.boolean().default(false), // has a verified account: only these are saved
+    pfp: t.string().default(""), // Bloxity profile picture URL ("" = none)
+    // Presence (presence.ts): what the others draw in the world.
+    x: t.float64().default(0),
     y: t.float64().default(0),
     z: t.float64().default(0),
-    yaw: t.float32().default(0), // heading, rad (PI = facing the gate)
-    speed: t.float32().default(0), // m/s, for flames and dead reckoning
-    boat: t.string().default(""), // equipped catalog ids (client config.js), "" = none / default
-    engine: t.string().default(""),
-    trail: t.string().default(""),
-    partner: t.string().default(""),
-    pets: t.string().default(""), // equipped pets "kind:tier,kind:tier"
-    world: t.string().default(""), // the world the player is in (client WORLDS id), "" = the start world
-    avatar: t.string().default(""), // Bloxity look JSON { equipped, proportions, skin }, "" = default
+    yaw: t.float32().default(0), // heading, rad
+    speed: t.float32().default(0), // m/s
+    grounded: t.boolean().default(true),
+    vy: t.float32().default(0), // vertical velocity m/s
+    carry: t.string().default(""), // vehicle held overhead: JSON {"type","paint","variant"}, "" = none
+    bench: t.int8().default(-1), // gym bench being used, -1 = not training
+    benchRep: t.float32().default(0), // 0..1 bar phase while training
+    avatar: t.string().default(""), // Bloxity look JSON, "" = default (never parsed)
+    emote: t.string().default(""), // current emote id, "" = none
+    emoteSeq: t.uint32().default(0), // incremented per emote message so repeats replay
   },
   "PlayerState",
 );

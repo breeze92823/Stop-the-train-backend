@@ -1,16 +1,16 @@
-// Keep in step with the client's src/config.js by hand.
+// Players per room. The deploy workflow greps this number (keep it 2-100, no seatCap).
 export const ROOM_MAX_CLIENTS = 50;
 
 // Longest accepted strings.
 export const NAME_MAX = 64;
 // Profile picture URL (Bloxity `pfp`), relayed so other players can draw it.
 export const PFP_MAX_LEN = 512;
-// Presence (presence.ts): the Bloxity avatar JSON relayed for the others to draw, the most pets
-// drawn per player, and the pose bounds (|x|, |y| and z up to `xy` m; z down to -`z` m: a race's
-// track runs far down -Z; speed in m/s).
+// Presence (presence.ts): the Bloxity avatar JSON relayed for the others to draw (never parsed),
+// and the pose bounds: the world lies within +-`pos` m on every axis; speed in m/s.
 export const AVATAR_MAX_LEN = 3000;
-export const PRESENCE_PETS_MAX = 8;
-export const POSE_BOUNDS = { xy: 5000, z: 1e8, speed: 2000 };
+export const POSE_BOUNDS = { pos: 2000, speed: 500 };
+// Emote ids ("wave", "12"): digits / slugs up to 64 chars. "" stops the emote.
+export const EMOTE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 // Colyseus drops the whole connection for a WebSocket message above this (default 4 KB).
 export const MAX_PAYLOAD_BYTES = 128 * 1024;
@@ -19,51 +19,47 @@ export const MAX_PAYLOAD_BYTES = 128 * 1024;
 export const RECONNECT_SECONDS = 20;
 
 // Upper bounds for saved values, so a forged payload cannot store a bogus number. Generous
-// ceilings, not game rules: the dearest engine costs ~3.6e28 Wins (client ENGINE gems).
-export const CURRENCY_MAX = 1e33; // trophies (Wins), gems, lightning (energy)
+// ceilings, not game rules.
+export const CURRENCY_MAX = 1e18; // coins, power, luck, multiplier, powerMult, breaks, robux
 export const REBIRTHS_MAX = 1e9;
-export const DISTANCE_MAX = 1e15; // personal best race distance, studs
 export const PLAY_SECONDS_MAX = 31_536_000; // ~1 year
+// Upgrade levels { upgradeId: int } (magnet, carry, cooldown, fuse, walkspeed ...).
+export const LEVEL_KINDS_MAX = 64;
+export const LEVEL_MAX = 1e6;
+// Unix-second timestamps (dailyAt, chestAt, updateEnds) and the daily streak counter.
+export const UNIX_S_MAX = 4_102_444_800; // year 2100
+export const DAILY_DAY_MAX = 10_000;
 
-// Owned catalog ids (client BOATS.list ~20, ENGINE ~34, PARTNER ~20, TRAILS ~29), with slack.
-export const OWNED_MAX = 256;
-// Pets (client PETS): at most PETS_MAX owned, PET_TIERS_MAX craft tiers, slots / storage the
-// counters can grow to.
-export const PETS_MAX = 1000;
-export const PET_TIERS_MAX = 16;
-export const PET_SLOTS_MAX = 50;
-// Online Gifts (client GIFTS.list, 12 of them): claimed indexes and potion counts.
-export const GIFTS_MAX = 64;
-export const POTION_KINDS_MAX = 32;
-export const POTION_COUNT_MAX = 1e9;
-// Daily Reward (client DAILY.days): days in one calendar cycle.
-export const DAILY_DAYS = 7;
-
-// Spin wheel (client SPIN in config.js; spin.ts): one free spin every SPIN_EVERY_MS, stored up
-// to SPIN_CAP; a new player starts with SPIN_START. SPINS_MAX bounds a saved count.
-export const SPIN_EVERY_MS = 15 * 60 * 1000;
-export const SPIN_CAP = 5;
-export const SPIN_START = 1;
-export const SPINS_MAX = 1e6;
-// The wedges' prizes and odds (weights in %). Ids match the client's SPIN.wedges; the client
-// decides what each prize is, the server only which one is won.
-export const SPIN_WEDGES = [
-  { id: "doubleWins", weight: 35 },
-  { id: "wins50", weight: 25 },
-  { id: "luck", weight: 35 },
-  { id: "wins250", weight: 4.9 },
-  { id: "hugePet", weight: 0.1 },
-] as const;
-
-// Leaderboards (leaderboard.ts; client plaza.js boards): the saved doc fields ranked (Rebirth,
-// Wins, Power, Playtime), rows per board and how often the lists are re-read and re-sent.
-export const LEADERBOARD_STATS = ["rebirths", "trophies", "energy", "playtime"] as const;
+// Leaderboards (leaderboard.ts): the saved doc fields ranked, rows per board and how often the
+// lists are re-read and re-sent.
+export const LEADERBOARD_STATS = ["rebirths", "breaks", "robux"] as const;
 export type LeaderboardStat = (typeof LEADERBOARD_STATS)[number];
 export const LEADERBOARD_SIZE = 10;
 export const LEADERBOARD_EVERY_MS = 60 * 1000;
 
-// Ids from the client's catalogs (boats, engines incl. `ladder-N`, partners, trails, pet kinds,
-// potions): camelCase slugs, so nothing odd is stored.
+// Bloxity hosted leaderboards: the three boards, declared ONCE. The frontend declares the same
+// ones via Legion.SDK.leaderboard.define. `id` = the stat name above.
+export const BLOXITY_BOARDS = [
+  { id: "rebirths", label: "Rebirths", order: "desc", mode: "best", format: "compact", reset: "none" },
+  { id: "breaks", label: "Trains Derailed", order: "desc", mode: "best", format: "compact", reset: "none" },
+  { id: "robux", label: "Robux Spent", order: "desc", mode: "best", format: "compact", reset: "none" },
+] as const;
+export const REPORT_EVERY_MS = 15 * 1000;
+export const REPORT_BATCH_MAX = 200;
+// Account ids reported to Bloxity: `legion_<_id>` (any `#m...` suffix is stripped).
+export const LEGION_PREFIX = "legion_";
+
+// Bloxity game slug used in verify calls; the env BLOXITY_GAME_ID wins. PLACEHOLDER until the
+// real game is created on the dashboard.
+export const GAME_SLUG_DEFAULT = "climb-and-slide-for-eggs";
+export const BLOXITY_API_DEFAULT = "https://api.bloxity.io";
+export const BLOXITY_TIMEOUT_MS = 5000;
+
+// Rewarded ads: tokens remembered (single use) per room, and the longest accepted token.
+export const AD_TOKENS_MAX = 5000;
+export const AD_TOKEN_MAX_LEN = 2048;
+
+// Ids from the client's catalogs (vehicle models, upgrades): slugs, so nothing odd is stored.
 export const ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 
 // The client's per-browser fallback id for players who are not signed in to Bloxity.
