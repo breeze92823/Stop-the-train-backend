@@ -42,12 +42,14 @@ export function sanitizeProgress(raw: unknown): Partial<PlayerDoc> | null {
   if (finite(raw.rebirths)) out.rebirths = clampInt(raw.rebirths, REBIRTHS_MAX);
   if (finite(raw.breaks)) out.breaks = clampInt(raw.breaks, CURRENCY_MAX);
   if (finite(raw.robux)) out.robux = clampInt(raw.robux, CURRENCY_MAX);
+  if (finite(raw.strength)) out.strength = clampInt(raw.strength, CURRENCY_MAX);
   if (raw.levels !== undefined) out.levels = sanitizeLevels(raw.levels);
   if (finite(raw.dailyAt)) out.dailyAt = clampInt(raw.dailyAt, UNIX_S_MAX);
   if (finite(raw.dailyDay)) out.dailyDay = clampInt(raw.dailyDay, DAILY_DAY_MAX);
   if (finite(raw.chestAt)) out.chestAt = clampInt(raw.chestAt, UNIX_S_MAX);
   if (finite(raw.updateEnds)) out.updateEnds = clampInt(raw.updateEnds, UNIX_S_MAX);
   if (typeof raw.seeded === "boolean") out.seeded = raw.seeded;
+  if (typeof raw.muted === "boolean") out.muted = raw.muted;
   if (finite(raw.playtime)) out.playtime = clampInt(raw.playtime, PLAY_SECONDS_MAX);
   if (finite(raw.lastSeen)) out.lastSeen = clampInt(raw.lastSeen, Date.now() + 10 * 60 * 1000);
   return out;

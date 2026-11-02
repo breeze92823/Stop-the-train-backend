@@ -7,6 +7,7 @@ export const PlayerState = schema(
     username: t.string().default(""), // verified Bloxity name when signed in, else the client's
     signedIn: t.boolean().default(false), // has a verified account: only these are saved
     pfp: t.string().default(""), // Bloxity profile picture URL ("" = none)
+    world: t.string().default("main"), // WORLDS id: clients only draw the players in their own world
     // Presence (presence.ts): what the others draw in the world.
     x: t.float64().default(0),
     y: t.float64().default(0),

@@ -22,7 +22,7 @@ describe("leaderboard", () => {
 
   it("sends the top saved players per stat and the own ranks after the load", async () => {
     const seed = [
-      doc("dev-u1", { username: "Ann", rebirths: 3, breaks: 500, robux: 10 }),
+      doc("dev-u1", { username: "Ann", rebirths: 3, breaks: 500, strength: 10 }),
       doc("dev-u2", { username: "Bo", rebirths: 9, breaks: 100 }),
       ...Array.from({ length: 15 }, (_, i) => doc(`x${i}`, { username: `P${i}`, breaks: 1000 + i })),
     ];
@@ -39,8 +39,8 @@ describe("leaderboard", () => {
     assert.deepStrictEqual(got.boards.rebirths, [{ name: "Bo", value: 9 }, { name: "Ann", value: 3 }]);
     assert.strictEqual(got.boards.breaks.length, LEADERBOARD_SIZE);
     assert.deepStrictEqual(got.boards.breaks[0], { name: "P14", value: 1014 });
-    assert.deepStrictEqual(got.boards.robux, [{ name: "Ann", value: 10 }], "players without a score are left out");
-    assert.deepStrictEqual(got.ranks, { rebirths: 2, breaks: 16, robux: 1 });
+    assert.deepStrictEqual(got.boards.strength, [{ name: "Ann", value: 10 }], "players without a score are left out");
+    assert.deepStrictEqual(got.ranks, { rebirths: 2, breaks: 16, strength: 1 });
   });
 
   it("gives a player with no save the lists and no ranks", async () => {
@@ -54,6 +54,6 @@ describe("leaderboard", () => {
     fake.release();
     await sleep(200);
     assert.deepStrictEqual(got?.boards.rebirths, [{ name: "Ann", value: 3 }]);
-    assert.deepStrictEqual(got?.ranks, { rebirths: null, breaks: null, robux: null });
+    assert.deepStrictEqual(got?.ranks, { rebirths: null, breaks: null, strength: null });
   });
 });

@@ -161,7 +161,7 @@ describe("bloxity", () => {
       assert.strictEqual(reportableId("dev-x"), null);
       queueScores("dev-x", { rebirths: 1 });
       queueScores("guest-1", { rebirths: 1 });
-      queueScores("legion_one#mfoo", { rebirths: 3, breaks: 9, robux: 2 });
+      queueScores("legion_one#mfoo", { rebirths: 3, breaks: 9, strength: 2 });
       queueScores("legion_one", { rebirths: 4 }); // later score replaces the earlier one
       for (let i = 0; i < 120; i++) queueScores(`legion_bulk${i}`, { rebirths: i, breaks: i });
       await flushReports();
@@ -169,7 +169,7 @@ describe("bloxity", () => {
       const all = calls.flatMap((c) => c.body.scores);
       assert.ok(calls.every((c) => c.body.scores.length <= REPORT_BATCH_MAX));
       assert.ok(all.every((s: any) => s.userId.startsWith("legion_") && !s.userId.includes("#")));
-      assert.deepStrictEqual(all.filter((s: any) => s.userId === "legion_one").map((s: any) => [s.board, s.score]).sort(), [["breaks", 9], ["rebirths", 4], ["robux", 2]]);
+      assert.deepStrictEqual(all.filter((s: any) => s.userId === "legion_one").map((s: any) => [s.board, s.score]).sort(), [["breaks", 9], ["rebirths", 4], ["strength", 2]]);
       assert.strictEqual(calls[0].url, "https://api.test/v1/leaderboards/hosted/stop-the-train/report");
       assert.strictEqual(calls[0].headers.Authorization, "Bearer rep-tok");
       assert.deepStrictEqual(calls[0].body.boards, JSON.parse(JSON.stringify(BLOXITY_BOARDS)));

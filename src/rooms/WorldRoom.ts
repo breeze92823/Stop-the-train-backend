@@ -1,15 +1,16 @@
 import { Room, Client, CloseCode } from "colyseus";
 import { WorldState, PlayerState } from "./schema/WorldState.js";
 import {
-  AD_TOKENS_MAX, GUEST_ID_PREFIX, ID_PATTERN, LEADERBOARD_EVERY_MS, NAME_MAX, PFP_MAX_LEN, RECONNECT_SECONDS, REPORT_EVERY_MS,
-  ROOM_MAX_CLIENTS,
+  AD_TOKENS_MAX, CHEST, DEFAULT_WORLD, GUEST_ID_PREFIX, ID_PATTERN, LEADERBOARD_EVERY_MS, NAME_MAX, PFP_MAX_LEN, RECONNECT_SECONDS,
+  REPORT_EVERY_MS, ROOM_MAX_CLIENTS, ROUND, WORLD_IDS, WORLDS, type WorldId,
 } from "../constants.js";
 import { getPlayers, type PlayerDoc } from "../db.js";
-import { sanitizeProgress } from "../sanitize.js";
+import { finite, sanitizeProgress } from "../sanitize.js";
 import { applyAvatar, applyCarry, applyEmote, applyPose, applyTrain } from "../presence.js";
 import { ranksOf, topBoards } from "../leaderboard.js";
 import { verifyAdReward, verifyToken } from "../bloxity.js";
 import { flushReports, queueScores } from "../reporter.js";
+import { Round } from "../round.js";
 
 function sanitizeName(raw: unknown): string {
   return typeof raw === "string" ? raw.slice(0, NAME_MAX) : "";
@@ -18,6 +19,8 @@ function sanitizeName(raw: unknown): string {
 function sanitizePfp(raw: unknown): string {
   return typeof raw === "string" && raw.length <= PFP_MAX_LEN && /^https?:\/\//i.test(raw) ? raw : "";
 }
+
+const isWorld = (v: unknown): v is WorldId => (WORLD_IDS as readonly unknown[]).includes(v);
 
 interface IdentityMsg {
   username?: unknown;
@@ -49,7 +52,48 @@ export class WorldRoom extends Room<{ state: WorldState }> {
   // Single-use rewarded-ad tokens seen by this room (bounded, oldest dropped first).
   private adTokens = new Set<string>();
 
+  // sessionId -> seconds played toward the free coins chest (0..CHEST.playSeconds). Only sessions whose
+  // save has been read are counted. Server-owned: never taken from the client.
+  private chestPlay = new Map<string, number>();
+  // sessionIds whose tab is hidden: no chest time while away.
+  private hidden = new Set<string>();
+  // sessionId -> rebirths in this account's save (setWorld's gate). Guests have no entry.
+  private rebirths = new Map<string, number>();
+
+  // One shared rail and train per world (round.ts): everyone in a world parks against the same train.
+  rounds = Object.fromEntries(
+    WORLD_IDS.map((id) => [id, new Round((type, payload) => this.sendToWorld(id, type, payload), undefined, undefined, id)]),
+  ) as Record<WorldId, Round>;
+
+  private worldOf(sessionId: string): WorldId {
+    const world = this.state.players.get(sessionId)?.world;
+    return isWorld(world) ? world : DEFAULT_WORLD;
+  }
+  private sendToWorld(world: WorldId, type: string, payload: unknown) {
+    this.broadcast(type, payload, { except: this.clients.filter((c) => this.worldOf(c.sessionId) !== world) });
+  }
+
   messages = {
+    // `park` { id, spec, x, halfLen, from }: a vehicle thrown onto the sender's rail (the echo is `railAdd`).
+    park: (client: Client, msg: unknown) => {
+      const round = this.rounds[this.worldOf(client.sessionId)];
+      if (!round.park(client.sessionId, msg)) client.send("railRefuse", { id: (msg as { id?: unknown })?.id });
+    },
+    // `seedRail` [{ spec, x, halfLen }]: the first client into a new world stocks its rail once.
+    seedRail: (client: Client, msg: unknown) => this.rounds[this.worldOf(client.sessionId)].seed(msg),
+    // `setWorld` { world, rebirths }: moves the sender to another world and answers with its `round`, or
+    // `worldRefused` { world } when the rebirths fall short. An account is judged by its save; a guest has
+    // none, so it states its own count (guests are client-authoritative like everything else they do).
+    setWorld: (client: Client, msg: { world?: unknown; rebirths?: unknown }) => {
+      const p = this.state.players.get(client.sessionId);
+      const world = msg?.world;
+      if (!p || !isWorld(world)) return;
+      const stated = finite(msg.rebirths) ? msg.rebirths : 0;
+      const rebirths = this.userIds.has(client.sessionId) ? this.rebirths.get(client.sessionId) ?? 0 : stated;
+      if (rebirths < WORLDS[world].rebirths) return client.send("worldRefused", { world });
+      p.world = world;
+      client.send("round", this.rounds[world].snapshot());
+    },
     // Debounced push of the client's whole progress. Upserts, so a first save creates the document.
     saveProgress: async (client: Client, msg: unknown) => {
       const p = this.state.players.get(client.sessionId);
@@ -58,6 +102,7 @@ export class WorldRoom extends Room<{ state: WorldState }> {
 
       const userId = this.userIds.get(client.sessionId);
       if (!userId) return;
+      if (patch.rebirths !== undefined) this.rebirths.set(client.sessionId, patch.rebirths);
       const players = getPlayers();
       if (!players) return; // Mongo unset/unreachable -- degrade silently
       try {
@@ -74,6 +119,23 @@ export class WorldRoom extends Room<{ state: WorldState }> {
       } catch (err) {
         console.warn("[WorldRoom] saveProgress failed", err);
       }
+    },
+    // `visible { on }`: the tab was hidden / shown. Hidden time does not count toward the chest.
+    visible: (client: Client, msg: { on?: unknown }) => {
+      if (msg?.on === false) this.hidden.add(client.sessionId);
+      else this.hidden.delete(client.sessionId);
+    },
+    // Opens the free coins chest once CHEST.playSeconds have been played. The server only attests
+    // (`chestResult`); the client adds the coins, as with ads. Checked and reset in one synchronous step,
+    // so a double click can't pay twice.
+    claimChest: (client: Client) => {
+      const play = this.chestPlay.get(client.sessionId);
+      if (play === undefined || play < CHEST.playSeconds) {
+        return client.send("chestResult", { ok: false, play: play ?? 0 });
+      }
+      this.chestPlay.set(client.sessionId, 0);
+      client.send("chestResult", { ok: true, coins: CHEST.coins, play: 0 });
+      void this.persistChest(client.sessionId);
     },
     // Presence: relayed through the roster so everyone draws the sender.
     pose: (client: Client, msg: unknown) => {
@@ -110,6 +172,11 @@ export class WorldRoom extends Room<{ state: WorldState }> {
         return client.send("adResult", { ok: false, placement, reason: "invalid" });
       }
       client.send("adResult", { ok: true, placement });
+      if (placement === CHEST.adPlacement && this.chestPlay.has(client.sessionId)) {
+        this.chestPlay.set(client.sessionId, CHEST.playSeconds);
+        client.send("chest", { play: CHEST.playSeconds });
+        void this.persistChest(client.sessionId);
+      }
     },
     // Re-states identity after a login/logout AFTER join. Answers progress/noProgress.
     identify: (client: Client, msg: IdentityMsg) => {
@@ -122,6 +189,27 @@ export class WorldRoom extends Room<{ state: WorldState }> {
   // Leaderboards: everyone gets the top lists + their own ranks every LEADERBOARD_EVERY_MS, and
   // once after their save loads. Scores reach Bloxity every REPORT_EVERY_MS and on dispose.
   onCreate() {
+    let last = Date.now();
+    this.clock.setInterval(() => {
+      const now = Date.now();
+      const dt = Math.min(0.5, (now - last) / 1000);
+      for (const id of WORLD_IDS) this.rounds[id].tick(dt);
+      last = now;
+    }, ROUND.tickMs);
+    // Chest play time: one second per tick for every loaded, visible player; corrected to the client
+    // every syncEverySec and saved every saveEverySec.
+    let chestTicks = 0;
+    this.clock.setInterval(() => {
+      chestTicks += 1;
+      for (const c of this.clients) {
+        const id = c.sessionId;
+        const play = this.chestPlay.get(id);
+        if (play === undefined) continue;
+        if (!this.hidden.has(id) && play < CHEST.playSeconds) this.chestPlay.set(id, Math.min(CHEST.playSeconds, play + 1));
+        if (chestTicks % CHEST.syncEverySec === 0) c.send("chest", { play: this.chestPlay.get(id) });
+        if (chestTicks % CHEST.saveEverySec === 0) void this.persistChest(id);
+      }
+    }, 1000);
     this.clock.setInterval(() => {
       for (const c of this.clients) void this.sendLeaderboard(c);
     }, LEADERBOARD_EVERY_MS);
@@ -134,7 +222,7 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     await flushReports();
   }
 
-  // `leaderboard` { boards: { rebirths|breaks|robux: [{ name, value }] }, ranks: { stat: n | null } }.
+  // `leaderboard` { boards: { rebirths|breaks|strength: [{ name, value }] }, ranks: { stat: n | null } }.
   private async sendLeaderboard(client: Client) {
     const userId = this.userIds.get(client.sessionId) ?? "";
     const [boards, ranks] = await Promise.all([topBoards(), ranksOf(userId)]);
@@ -153,6 +241,7 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     applyPose(p, options?.pose);
     applyAvatar(p, options);
     this.state.players.set(client.sessionId, p);
+    client.send("round", this.rounds[DEFAULT_WORLD].snapshot());
     void this.applyIdentity(client, p, options ?? {});
   }
 
@@ -177,10 +266,25 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     const userId = this.userIds.get(sessionId);
     const players = getPlayers();
     if (!userId || !players) return;
+    const chestPlay = this.chestPlay.get(sessionId);
     try {
-      await players.updateOne({ _id: userId }, { $set: { lastSeen: Date.now() } });
+      await players.updateOne({ _id: userId }, { $set: { lastSeen: Date.now(), ...(chestPlay === undefined ? {} : { chestPlay: Math.floor(chestPlay) }) } });
     } catch (err) {
       console.warn("[WorldRoom] stampLastSeen failed", err);
+    }
+  }
+
+  // Writes the chest play time of a signed-in player (guests have none). No upsert: a new account's
+  // first saveProgress creates the document.
+  private async persistChest(sessionId: string) {
+    const userId = this.userIds.get(sessionId);
+    const players = getPlayers();
+    const play = this.chestPlay.get(sessionId);
+    if (!userId || !players || play === undefined) return;
+    try {
+      await players.updateOne({ _id: userId }, { $set: { chestPlay: Math.floor(play) } });
+    } catch (err) {
+      console.warn("[WorldRoom] persistChest failed", err);
     }
   }
 
@@ -191,6 +295,9 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     this.identified.delete(sessionId);
     this.loaded.delete(sessionId);
     this.identSeq.delete(sessionId);
+    this.chestPlay.delete(sessionId);
+    this.hidden.delete(sessionId);
+    this.rebirths.delete(sessionId);
   }
 
   // Resolves who this connection is. With a `token`: verified through Bloxity (account id
@@ -230,6 +337,7 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     if (userId === prev && this.identified.has(client.sessionId)) return;
     this.identified.add(client.sessionId);
     this.loaded.delete(client.sessionId); // no writes until the new identity's save is read
+    this.rebirths.delete(client.sessionId);
     p.signedIn = !!userId;
 
     if (userId) {
@@ -275,9 +383,13 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     if (this.state.players.get(client.sessionId) !== p || (this.userIds.get(client.sessionId) ?? "") !== userId) return;
 
     this.loaded.add(client.sessionId);
+    if (userId) this.rebirths.set(client.sessionId, doc?.rebirths ?? 0);
+    const play = Math.min(CHEST.playSeconds, Math.max(0, doc?.chestPlay ?? 0));
+    this.chestPlay.set(client.sessionId, play);
     const now = Date.now();
     if (!doc) client.send("noProgress", { serverTime: now });
     else client.send("progress", { ...(sanitizeProgress(doc) ?? {}), serverTime: now });
+    client.send("chest", { play }); // after progress: hydrating the save resets the client's count
     void this.sendLeaderboard(client);
   }
 
