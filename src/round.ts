@@ -1,11 +1,15 @@
 import { CARRY_VARIANTS } from "./presence.js";
-import { DEFAULT_WORLD, ID_PATTERN, ROUND, TRAIN_TABLE, type WorldId } from "./constants.js";
+import { DEFAULT_WORLD, FAIR, ID_PATTERN, ROUND, TRAIN_TABLE, type WorldId } from "./constants.js";
+import { damageCap, sizeTrain, spreadK, streakK } from "./fair.js";
 
 // The shared round: one rail and one train for a world of the room. The server owns the clock, the
 // parked vehicles and the train's position and HP, and tells every client in that world what happened;
 // each client only draws it (rigid-body piles and wrecks stay local and cosmetic).
 // Messages out (all through `emit`): `round` snapshot (join / world change / train start), `railAdd`,
 // `trainTick`, `hit`, `derail`, `gone`.
+// Fair trains (fair.ts): every train is sized to the power of the players in the world, a ladder makes
+// the next one harder after a win and easier after a loss, one player's damage is capped while others
+// have vehicles in the pass, and the reward is split by the damage each player did.
 
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
@@ -23,6 +27,11 @@ export interface RailVehicle {
   spec: VehicleSpec;
   x: number;
   halfLen: number;
+}
+// A player in this world and their load (fair.ts parkHp). Players with hidden tabs are left out.
+export interface Member {
+  sid: string;
+  parkHp: number;
 }
 type Emit = (type: string, payload: unknown) => void;
 export type Phase = "countdown" | "run" | "wreck";
@@ -42,8 +51,10 @@ export function cleanSpec(raw: unknown): VehicleSpec | null {
 
 export class Round {
   phase: Phase = "countdown";
-  idx = 0; // TRAIN_TABLE index of the current train: the first is always beatable
-  hp: number = TRAIN_TABLE[0].hp;
+  idx = 0; // TRAIN_TABLE index of the current train's look
+  hp = 0;
+  maxHp = 0; // this train's HP, sized to the room (fair.ts)
+  reward = 0; // coins for stopping it, before X2 and the streak
   back = false; // this train got through last time
   doubled = true;
   endsAt: number; // ms: end of the countdown / wreck
@@ -53,7 +64,18 @@ export class Round {
   length = 0;
   vehicles = new Map<string, RailVehicle>();
   seeded = false;
+  // The ladder: step (-3..10) scales the next train, streak counts wins in a row, losses losses in a row.
+  step = 0;
+  streak = 0;
+  losses = 0;
+  comeback = false; // this train is the x2 COMEBACK train after FAIR.comebackAfter losses
+  stopped = 0; // trains this world of the room has stopped (milestones)
+  underdog = ""; // the weakest player of a room of 2+ (+50% coins)
+  private spread = 1;
   private hitBy = new Set<string>();
+  private damageBy = new Map<string, number>();
+  private overkill = new Set<string>();
+  private emptySince = 0;
   private lastSync = 0;
 
   constructor(
@@ -61,8 +83,10 @@ export class Round {
     private now: () => number = Date.now,
     private rng: () => number = Math.random,
     private world: WorldId = DEFAULT_WORLD,
+    private members: () => Member[] = () => [],
   ) {
     this.endsAt = now() + ROUND.firstCountdown * 1000;
+    this.size();
   }
 
   get train() {
@@ -75,14 +99,76 @@ export class Round {
       phase: this.phase,
       idx: this.idx,
       hp: this.hp,
+      maxHp: this.maxHp,
+      reward: this.reward,
       back: this.back,
       doubled: this.doubled,
+      step: this.step,
+      streak: this.streak,
+      losses: this.losses,
+      comeback: this.comeback,
+      underdog: this.underdog,
+      stopped: this.stopped,
       left: this.phase === "run" ? 0 : Math.max(0, (this.endsAt - this.now()) / 1000),
       head: this.head,
       speed: this.speed,
       seeded: this.seeded,
       rail: [...this.vehicles.values()].map((v) => ({ id: v.id, by: v.by, spec: v.spec, x: v.x, halfLen: v.halfLen })),
     };
+  }
+
+  // Sizes the coming train to the players in this world: their power x the ladder x this train's spread.
+  private size() {
+    const power = this.members().reduce((a, m) => a + m.parkHp, 0);
+    const t = sizeTrain(power, this.step, this.spread);
+    this.idx = t.idx;
+    this.hp = this.maxHp = t.hp;
+    this.reward = t.reward;
+  }
+
+  // A world nobody has played in for FAIR.ladder.idleResetMs starts the ladder again.
+  private idleCheck(present: number) {
+    const t = this.now();
+    if (!present) {
+      if (!this.emptySince) this.emptySince = t;
+      return;
+    }
+    if (this.emptySince && t - this.emptySince >= FAIR.ladder.idleResetMs) {
+      this.step = this.streak = this.losses = 0;
+      this.comeback = false;
+    }
+    this.emptySince = 0;
+  }
+
+  // How much more damage `by`'s hits may count for in this pass (Infinity while no one else is in it).
+  private capLeft(by: string): number {
+    if (!by) return Infinity;
+    // The others in this pass: what they already took off the train and what they still have on the rail.
+    const parked = new Map<string, number>();
+    for (const sid of this.hitBy) if (sid !== by) parked.set(sid, this.damageBy.get(sid) ?? 0);
+    for (const v of this.vehicles.values()) if (v.by && v.by !== by) parked.set(v.by, (parked.get(v.by) ?? 0) + v.spec.hp);
+    const power = new Map(this.members().map((m) => [m.sid, m.parkHp]));
+    let othersPower = 0;
+    let othersParked = 0;
+    for (const [sid, hp] of parked) {
+      othersPower += power.get(sid) ?? 0;
+      othersParked += hp;
+    }
+    return Math.max(0, damageCap(this.maxHp, othersPower, othersParked, parked.size) - (this.damageBy.get(by) ?? 0));
+  }
+
+  // Coins per contributor (sessionId -> coins): the reward (X2, streak) split by damage, at least
+  // FAIR.rewardFloor of it each, halved for overkill, +FAIR.underdog for the room's weakest player.
+  private payouts(): Record<string, number> {
+    const total = this.reward * (this.doubled ? 2 : 1) * streakK(this.streak);
+    const pay: Record<string, number> = {};
+    for (const sid of this.hitBy) {
+      let k = Math.max(FAIR.rewardFloor, (this.damageBy.get(sid) ?? 0) / this.maxHp);
+      if (this.overkill.has(sid)) k *= FAIR.overkill.cut;
+      if (sid === this.underdog) k *= 1 + FAIR.underdog;
+      pay[sid] = Math.round(total * k);
+    }
+    return pay;
   }
 
   private add(by: string, id: string, spec: VehicleSpec, x: number, halfLen: number, from: unknown): boolean {
@@ -120,23 +206,24 @@ export class Round {
     });
   }
 
-  private pickTrain() {
-    const total = TRAIN_TABLE.reduce((a, t) => a + t.weight, 0);
-    let r = this.rng() * total;
-    for (let i = 0; i < TRAIN_TABLE.length; i++) {
-      r -= TRAIN_TABLE[i].weight;
-      if (r <= 0) return i;
-    }
-    return 0;
-  }
-
   private startTrain() {
+    // Sized again as it leaves: players may have joined, left or grown during the countdown.
+    const members = this.members();
+    this.idleCheck(members.length);
+    this.size();
     const t = this.train;
     this.phase = "run";
     this.speed = this.target = t.speed;
     this.head = ROUND.mouth + t.speed * ROUND.approachSeconds;
     this.length = ROUND.locoLength + ROUND.gap + t.wagons * (ROUND.wagonLength + ROUND.gap);
     this.hitBy.clear();
+    this.damageBy.clear();
+    this.overkill.clear();
+    this.underdog = "";
+    if (members.length >= 2) {
+      const sorted = [...members].sort((a, b) => a.parkHp - b.parkHp);
+      if (sorted[0].parkHp < sorted[1].parkHp) this.underdog = sorted[0].sid;
+    }
     this.lastSync = 0;
     this.emit("round", this.snapshot());
   }
@@ -148,15 +235,39 @@ export class Round {
     return best;
   }
 
+  // A stopped train has already moved the ladder up (at the derail); one that got through moves it down,
+  // unless nobody was there to lose it.
   private endRun(result: "stopped" | "through") {
-    this.idx = this.pickTrain();
-    this.hp = this.train.hp;
+    const hpLeft = this.maxHp > 0 ? this.hp / this.maxHp : 0;
+    const present = this.members().length;
+    if (result === "through" && present) {
+      this.step = Math.max(FAIR.ladder.min, this.step - FAIR.ladder.loss);
+      this.streak = 0;
+      this.losses += 1;
+    }
+    this.idleCheck(present);
+    this.comeback = this.losses >= FAIR.comebackAfter;
+    this.spread = spreadK(this.rng());
+    this.size();
     this.back = false;
-    this.doubled = this.rng() < ROUND.doubleChance;
+    this.doubled = this.rng() < ROUND.doubleChance || this.comeback;
     this.phase = "countdown";
     this.endsAt = this.now() + ROUND.countdown * 1000;
     if (result === "stopped") this.vehicles.clear(); // a crashed train leaves a clean railway
-    this.emit("gone", { result, ...this.snapshot() });
+    this.emit("gone", { result, hpLeft, ...this.snapshot() });
+  }
+
+  // The train is down: pay, climb the ladder, and count toward the room's milestones.
+  private derail() {
+    const pay = this.payouts();
+    const total = this.reward * (this.doubled ? 2 : 1) * streakK(this.streak);
+    this.streak += 1;
+    this.losses = 0;
+    this.step = Math.min(FAIR.ladder.max, this.step + FAIR.ladder.win);
+    this.stopped += 1;
+    const milestone =
+      this.stopped % FAIR.milestone.every === 0 ? { n: this.stopped, coins: Math.round(total * FAIR.milestone.share) } : null;
+    this.emit("derail", { idx: this.idx, contributors: [...this.hitBy], pay, streak: this.streak, step: this.step, milestone });
   }
 
   tick(dt: number): void {
@@ -174,18 +285,23 @@ export class Round {
     this.head -= this.speed * dt;
     let v = this.nextAt(this.head);
     while (v) {
-      const damage = Math.min(v.spec.hp, this.hp);
-      this.hp = Math.max(0, this.hp - v.spec.hp);
-      const ratio = Math.min(1, v.spec.hp / Math.max(1, spec.hp * 0.25));
+      // Past its owner's cap a vehicle still crashes, but takes nothing off the train.
+      const damage = Math.min(v.spec.hp, this.hp, this.capLeft(v.by));
+      this.hp = Math.max(0, this.hp - damage);
+      const ratio = Math.min(1, damage / Math.max(1, this.maxHp * 0.25));
       this.speed *= 1 - 0.1 - 0.16 * ratio;
-      this.target = spec.speed * (0.48 + 0.52 * (this.hp / spec.hp));
+      this.target = spec.speed * (0.48 + 0.52 * (this.hp / this.maxHp));
       this.vehicles.delete(v.id);
-      if (v.by) this.hitBy.add(v.by);
-      this.emit("hit", { id: v.id, by: v.by, damage, hp: this.hp, speed: this.speed });
+      if (v.by) {
+        this.hitBy.add(v.by);
+        this.damageBy.set(v.by, (this.damageBy.get(v.by) ?? 0) + damage);
+        if (v.spec.hp > FAIR.overkill.ratio * this.maxHp) this.overkill.add(v.by);
+      }
+      this.emit("hit", { id: v.id, by: v.by, damage, capped: damage < Math.min(v.spec.hp, this.hp + damage), hp: this.hp, speed: this.speed });
       if (this.hp <= 0) {
         this.phase = "wreck";
         this.endsAt = t + ROUND.wreckSeconds * 1000;
-        this.emit("derail", { idx: this.idx, contributors: [...this.hitBy] });
+        this.derail();
         return;
       }
       v = this.nextAt(this.head);

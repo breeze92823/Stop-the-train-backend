@@ -1,5 +1,5 @@
 import {
-  CURRENCY_MAX, REBIRTHS_MAX, PLAY_SECONDS_MAX, LEVEL_KINDS_MAX, LEVEL_MAX, UNIX_S_MAX, DAILY_DAY_MAX, ID_PATTERN,
+  CURRENCY_MAX, REBIRTHS_MAX, PLAY_SECONDS_MAX, LEVEL_KINDS_MAX, LEVEL_MAX, UNIX_S_MAX, DAILY_DAY_MAX, ID_PATTERN, TRAIN_IDS,
 } from "./constants.js";
 import type { PlayerDoc } from "./db.js";
 
@@ -28,6 +28,14 @@ export function sanitizeLevels(raw: unknown): Record<string, number> {
   return out;
 }
 
+// The collection book { trainId: times stopped }: known tier ids only, whole non-negative counts.
+export function sanitizeTrainsStopped(raw: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!isObject(raw)) return out;
+  for (const [id, n] of Object.entries(raw)) if (TRAIN_IDS.includes(id) && finite(n)) out[id] = clampInt(n, CURRENCY_MAX);
+  return out;
+}
+
 // The game is client-authoritative -- no server-side gameplay validation. What IS enforced:
 // shape and bounds, so a malformed payload can never corrupt this player's own Mongo document.
 export function sanitizeProgress(raw: unknown): Partial<PlayerDoc> | null {
@@ -44,6 +52,7 @@ export function sanitizeProgress(raw: unknown): Partial<PlayerDoc> | null {
   if (finite(raw.robux)) out.robux = clampInt(raw.robux, CURRENCY_MAX);
   if (finite(raw.strength)) out.strength = clampInt(raw.strength, CURRENCY_MAX);
   if (raw.levels !== undefined) out.levels = sanitizeLevels(raw.levels);
+  if (raw.trainsStopped !== undefined) out.trainsStopped = sanitizeTrainsStopped(raw.trainsStopped);
   if (finite(raw.dailyAt)) out.dailyAt = clampInt(raw.dailyAt, UNIX_S_MAX);
   if (finite(raw.dailyDay)) out.dailyDay = clampInt(raw.dailyDay, DAILY_DAY_MAX);
   if (finite(raw.chestAt)) out.chestAt = clampInt(raw.chestAt, UNIX_S_MAX);

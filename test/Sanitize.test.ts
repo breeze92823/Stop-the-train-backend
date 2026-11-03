@@ -32,6 +32,11 @@ describe("sanitizeProgress", () => {
     assert.deepStrictEqual(sanitizeProgress({ levels: "x" })!.levels, {});
   });
 
+  it("keeps the collection book to known trains and whole counts", () => {
+    const out = sanitizeProgress({ trainsStopped: { common: 3.7, epic: -1, made_up: 5, rare: "x" } })!;
+    assert.deepStrictEqual(out.trainsStopped, { common: 3, epic: 0 });
+  });
+
   it("bounds the timestamps and the daily streak", () => {
     const out = sanitizeProgress({ dailyAt: -1, chestAt: 1e15, updateEnds: 1700000000.7, dailyDay: 4.2 })!;
     assert.deepStrictEqual([out.dailyAt, out.chestAt, out.updateEnds, out.dailyDay], [0, UNIX_S_MAX, 1700000000, 4]);

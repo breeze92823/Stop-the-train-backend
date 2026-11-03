@@ -102,19 +102,52 @@ export const ROUND = {
   perPlayerCap: 12, // of them one player may own
   hpMax: 1e14,
 } as const;
-// Weakest first. hp / speed / weight / wagons mirror the frontend TRAINS.
+// Weakest first. id / hp / reward / speed / wagons mirror the frontend TRAINS. A train's real HP is
+// sized to the room (fair.ts); the tier with the nearest hp gives its look, and reward / hp its pay rate.
 export const TRAIN_TABLE = [
-  { hp: 12e3, speed: 25, weight: 44, wagons: 2 },
-  { hp: 60e3, speed: 27, weight: 28, wagons: 3 },
-  { hp: 300e3, speed: 29, weight: 16, wagons: 3 },
-  { hp: 3e6, speed: 31, weight: 8, wagons: 4 },
-  { hp: 57e6, speed: 33, weight: 4, wagons: 4 },
-  { hp: 500e6, speed: 35, weight: 2, wagons: 5 },
-  { hp: 4e9, speed: 36, weight: 1, wagons: 5 },
-  { hp: 35e9, speed: 37, weight: 0.5, wagons: 6 },
-  { hp: 300e9, speed: 38, weight: 0.25, wagons: 6 },
-  { hp: 2.5e12, speed: 40, weight: 0.1, wagons: 6 },
+  { id: "common", hp: 12e3, reward: 120e3, speed: 25, wagons: 2 },
+  { id: "uncommon", hp: 60e3, reward: 677e3, speed: 27, wagons: 3 },
+  { id: "rare", hp: 300e3, reward: 3.2e6, speed: 29, wagons: 3 },
+  { id: "epic", hp: 3e6, reward: 14e6, speed: 31, wagons: 4 },
+  { id: "legendary", hp: 57e6, reward: 57e6, speed: 33, wagons: 4 },
+  { id: "mythic", hp: 500e6, reward: 420e6, speed: 35, wagons: 5 },
+  { id: "godly", hp: 4e9, reward: 3.1e9, speed: 36, wagons: 5 },
+  { id: "divine", hp: 35e9, reward: 24e9, speed: 37, wagons: 6 },
+  { id: "cosmic", hp: 300e9, reward: 200e9, speed: 38, wagons: 6 },
+  { id: "secret", hp: 2.5e12, reward: 1.6e12, speed: 40, wagons: 6 },
 ] as const;
+export const TRAIN_IDS: readonly string[] = TRAIN_TABLE.map((t) => t.id);
+
+// The Vehicle Yard's bays as [Strength needed, variant HP multiplier]: a bay's vehicle has req x mult HP.
+// Mirrors the frontend YARD.rows and VARIANTS.
+export const BAYS: readonly (readonly [number, number])[] = [
+  [5, 1], [25, 1], [150, 1.5], [600, 1], [1500, 6], [6000, 1], [12000, 1], [25000, 1],
+  [50000, 1], [90000, 1], [125000, 1], [200000, 1], [350000, 1], [600000, 1], [1e6, 1], [2.5e6, 1], [6e6, 1], [15e6, 1],
+];
+
+// Fair trains (fair.ts / round.ts). Mirrors the frontend FAIR in config.js.
+// Room power = sum over the players in a world of (their best vehicle's HP x their Carry level).
+export const FAIR = {
+  targetRatio: 2.2, // a train's HP = room power x this (before the ladder and the spread)
+  minHp: 20, // the smallest train (a room of brand-new players)
+  carryMax: 20, // Carry levels above this are not believed
+  // A new train is sometimes a "challenge" (harder, pays as much more) or an easier one.
+  spread: { up: 0.2, upK: 1.6, down: 0.1, downK: 0.7 },
+  // Each stopped train is `win` steps up, each one that gets through `loss` steps down: a room settles
+  // where it wins loss / (win + loss) = 60% of its trains. Idle rooms reset.
+  ladder: { min: -3, max: 10, win: 1, loss: 1.5, up: 0.25, down: 0.15, floor: 0.6, idleResetMs: 10 * 60 * 1000 },
+  // With 2+ players' vehicles on the rail, one player's damage counts up to the larger of
+  // damageCap x HP and what the others can't be asked for (HP - teamShare x the others' trips x power).
+  damageCap: 0.55,
+  teamShare: 0.5,
+  trips: 3, // loads one player can bring in a countdown
+  rewardFloor: 0.1, // smallest share of the reward for anyone whose vehicle hit
+  overkill: { ratio: 3, cut: 0.5 }, // a vehicle with > ratio x the train's HP halves its owner's pay
+  streak: { per: 0.1, max: 1 }, // +10% coins per train stopped in a row, up to +100%
+  comebackAfter: 3, // losses in a row before a x2 COMEBACK train
+  underdog: 0.5, // +50% coins for the weakest player of a room of 2+
+  milestone: { every: 25, share: 0.5 }, // every 25 trains a room stops pay everyone there half a reward
+} as const;
 
 // The client's per-browser fallback id for players who are not signed in to Bloxity.
 // Guests are never persisted.
