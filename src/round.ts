@@ -58,7 +58,9 @@ export class Round {
   back = false; // this train got through last time
   doubled = true;
   endsAt: number; // ms: end of the countdown / wreck
-  head = 0;
+  // -1: out of the east tunnel heading west, +1: out of the west tunnel heading east. Picked per train.
+  dir: -1 | 1 = -1;
+  head = 0; // x of the locomotive's nose; the train trails behind it, away from `dir`
   speed = 0;
   target = 0;
   length = 0;
@@ -86,7 +88,12 @@ export class Round {
     private members: () => Member[] = () => [],
   ) {
     this.endsAt = now() + ROUND.firstCountdown * 1000;
+    this.dir = this.pickDir();
     this.size();
+  }
+
+  private pickDir(): -1 | 1 {
+    return this.rng() < 0.5 ? 1 : -1;
   }
 
   get train() {
@@ -110,6 +117,7 @@ export class Round {
       underdog: this.underdog,
       stopped: this.stopped,
       left: this.phase === "run" ? 0 : Math.max(0, (this.endsAt - this.now()) / 1000),
+      dir: this.dir,
       head: this.head,
       speed: this.speed,
       seeded: this.seeded,
@@ -214,7 +222,7 @@ export class Round {
     const t = this.train;
     this.phase = "run";
     this.speed = this.target = t.speed;
-    this.head = ROUND.mouth + t.speed * ROUND.approachSeconds;
+    this.head = -this.dir * (ROUND.mouth + t.speed * ROUND.approachSeconds);
     this.length = ROUND.locoLength + ROUND.gap + t.wagons * (ROUND.wagonLength + ROUND.gap);
     this.hitBy.clear();
     this.damageBy.clear();
@@ -228,10 +236,13 @@ export class Round {
     this.emit("round", this.snapshot());
   }
 
-  // The eastmost vehicle the train's nose has reached, if any.
+  // The vehicle the train's nose has reached first along its way (eastmost for a westbound train), if any.
   private nextAt(front: number): RailVehicle | null {
+    const d = this.dir;
     let best: RailVehicle | null = null;
-    for (const v of this.vehicles.values()) if (v.x + v.halfLen >= front - 0.2 && (!best || v.x > best.x)) best = v;
+    for (const v of this.vehicles.values()) {
+      if (d * (v.x - d * v.halfLen) <= d * front + 0.2 && (!best || -d * v.x > -d * best.x)) best = v;
+    }
     return best;
   }
 
@@ -248,6 +259,7 @@ export class Round {
     this.idleCheck(present);
     this.comeback = this.losses >= FAIR.comebackAfter;
     this.spread = spreadK(this.rng());
+    this.dir = this.pickDir();
     this.size();
     this.back = false;
     this.doubled = this.rng() < ROUND.doubleChance || this.comeback;
@@ -282,7 +294,7 @@ export class Round {
     }
     const spec = this.train;
     this.speed += Math.sign(this.target - this.speed) * Math.min(Math.abs(this.target - this.speed), ROUND.brake * dt);
-    this.head -= this.speed * dt;
+    this.head += this.dir * this.speed * dt;
     let v = this.nextAt(this.head);
     while (v) {
       // Past its owner's cap a vehicle still crashes, but takes nothing off the train.
@@ -306,7 +318,7 @@ export class Round {
       }
       v = this.nextAt(this.head);
     }
-    if (this.head + this.length < -ROUND.mouth - 6) return this.endRun("through");
+    if (this.dir * this.head - this.length > ROUND.mouth + 6) return this.endRun("through");
     if (t - this.lastSync >= ROUND.syncEveryMs) {
       this.lastSync = t;
       this.emit("trainTick", { head: this.head, speed: this.speed });
