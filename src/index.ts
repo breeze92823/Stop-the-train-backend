@@ -3,6 +3,7 @@ import { listen } from "@colyseus/tools";
 import app from "./app.config.js";
 import { closeDb, connectDb } from "./db.js";
 import { flushReports } from "./reporter.js";
+import { installRoomReporter } from "./roomReporter.js";
 
 // Player-progress persistence (src/db.ts) connects before the room accepts
 // players; connectDb() itself never throws or hangs (degrades to "no persistence").
@@ -18,4 +19,7 @@ app.onShutdown(async () => {
 console.log(`[server] pod=${process.env.POD_NAME || "local"} channel=${process.env.BLOXITY_CHANNEL || "-"}`);
 
 // Listens on PORT (or 2567).
-listen(app);
+await listen(app);
+
+// Lists this pod's rooms under Open Rooms on the Bloxity game page (no-op outside Legion hosting).
+installRoomReporter();
