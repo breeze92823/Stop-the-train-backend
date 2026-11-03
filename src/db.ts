@@ -21,6 +21,7 @@ export interface PlayerDoc {
   strength?: number; // highest Strength ever reached (power resets on rebirth)
   powerMult?: number; // >= 1
   levels?: Record<string, number>; // upgradeId -> level (magnet, carry, cooldown, fuse, walkspeed)
+  trainsStopped?: Record<string, number>; // train tier id -> times stopped (the collection book)
   dailyAt?: number; // unix s
   dailyDay?: number;
   chestAt?: number; // unix s (legacy: replaced by chestPlay)

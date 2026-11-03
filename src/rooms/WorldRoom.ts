@@ -1,7 +1,7 @@
 import { Room, Client, CloseCode } from "colyseus";
 import { WorldState, PlayerState } from "./schema/WorldState.js";
 import {
-  AD_TOKENS_MAX, CHEST, DEFAULT_WORLD, GUEST_ID_PREFIX, ID_PATTERN, LEADERBOARD_EVERY_MS, NAME_MAX, PFP_MAX_LEN, RECONNECT_SECONDS,
+  AD_TOKENS_MAX, CHEST, CURRENCY_MAX, DEFAULT_WORLD, GUEST_ID_PREFIX, ID_PATTERN, LEADERBOARD_EVERY_MS, NAME_MAX, PFP_MAX_LEN, RECONNECT_SECONDS,
   REPORT_EVERY_MS, ROOM_MAX_CLIENTS, ROUND, WORLD_IDS, WORLDS, type WorldId,
 } from "../constants.js";
 import { getPlayers, type PlayerDoc } from "../db.js";
@@ -10,7 +10,8 @@ import { applyAvatar, applyCarry, applyEmote, applyPose, applyTrain } from "../p
 import { ranksOf, topBoards } from "../leaderboard.js";
 import { verifyAdReward, verifyToken } from "../bloxity.js";
 import { flushReports, queueScores } from "../reporter.js";
-import { Round } from "../round.js";
+import { parkHp } from "../fair.js";
+import { Round, type Member } from "../round.js";
 
 function sanitizeName(raw: unknown): string {
   return typeof raw === "string" ? raw.slice(0, NAME_MAX) : "";
@@ -60,10 +61,25 @@ export class WorldRoom extends Room<{ state: WorldState }> {
   // sessionId -> rebirths in this account's save (setWorld's gate). Guests have no entry.
   private rebirths = new Map<string, number>();
 
-  // One shared rail and train per world (round.ts): everyone in a world parks against the same train.
+  // sessionId -> one load of this player (fair.ts parkHp: best vehicle x Carry), from its `stats`.
+  private loads = new Map<string, number>();
+
+  // One shared rail and train per world (round.ts): everyone in a world parks against the same train,
+  // sized to the players there with a visible tab.
   rounds = Object.fromEntries(
-    WORLD_IDS.map((id) => [id, new Round((type, payload) => this.sendToWorld(id, type, payload), undefined, undefined, id)]),
+    WORLD_IDS.map((id) => [
+      id,
+      new Round((type, payload) => this.sendToWorld(id, type, payload), undefined, undefined, id, () => this.membersOf(id)),
+    ]),
   ) as Record<WorldId, Round>;
+
+  private membersOf(world: WorldId): Member[] {
+    const out: Member[] = [];
+    for (const [sid, load] of this.loads) {
+      if (this.state.players.has(sid) && this.worldOf(sid) === world && !this.hidden.has(sid)) out.push({ sid, parkHp: load });
+    }
+    return out;
+  }
 
   private worldOf(sessionId: string): WorldId {
     const world = this.state.players.get(sessionId)?.world;
@@ -93,6 +109,12 @@ export class WorldRoom extends Room<{ state: WorldState }> {
       if (rebirths < WORLDS[world].rebirths) return client.send("worldRefused", { world });
       p.world = world;
       client.send("round", this.rounds[world].snapshot());
+    },
+    // `stats` { power, carry }: the sender's Strength and Carry level, which size the trains (fair.ts).
+    // Client-authoritative like the rest of the game; only bounded here.
+    stats: (client: Client, msg: { power?: unknown; carry?: unknown }) => {
+      if (!this.state.players.has(client.sessionId) || !finite(msg?.power) || !finite(msg?.carry)) return;
+      this.loads.set(client.sessionId, parkHp(Math.min(CURRENCY_MAX, Math.max(0, msg.power)), msg.carry));
     },
     // Debounced push of the client's whole progress. Upserts, so a first save creates the document.
     saveProgress: async (client: Client, msg: unknown) => {
@@ -298,6 +320,7 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     this.chestPlay.delete(sessionId);
     this.hidden.delete(sessionId);
     this.rebirths.delete(sessionId);
+    this.loads.delete(sessionId);
   }
 
   // Resolves who this connection is. With a `token`: verified through Bloxity (account id

@@ -30,6 +30,21 @@ describe("shared rail over the room", () => {
     assert.strictEqual(room.rounds.main.vehicles.size, 1);
   });
 
+  it("sizes the world's trains from its players' stats, leaving hidden tabs out", async () => {
+    const room = await colyseus.createRoom<WorldState>("world", {});
+    const a = await colyseus.connectTo(room, { userId: "guest-a" });
+    const b = await colyseus.connectTo(room, { userId: "guest-b" });
+    a.send("stats", { power: 700, carry: 2 });
+    b.send("stats", { power: 30, carry: 1 });
+    b.send("stats", { power: "lots", carry: 1 }); // ignored
+    await sleep(80);
+    const members = (room as any).membersOf("main");
+    assert.deepStrictEqual(members.map((m: any) => m.parkHp).sort((x: number, y: number) => x - y), [25, 1200]);
+    b.send("visible", { on: false });
+    await sleep(80);
+    assert.strictEqual((room as any).membersOf("main").length, 1);
+  });
+
   it("refuses a bad throw to the sender only", async () => {
     const room = await colyseus.createRoom<WorldState>("world", {});
     const a = await colyseus.connectTo(room, { userId: "guest-a" });
