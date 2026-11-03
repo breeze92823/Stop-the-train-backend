@@ -155,6 +155,7 @@ export class Round {
     this.doubled = this.rng() < ROUND.doubleChance;
     this.phase = "countdown";
     this.endsAt = this.now() + ROUND.countdown * 1000;
+    if (result === "stopped") this.vehicles.clear(); // a crashed train leaves a clean railway
     this.emit("gone", { result, ...this.snapshot() });
   }
 
