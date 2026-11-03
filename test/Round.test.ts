@@ -228,6 +228,27 @@ describe("shared Round", () => {
     assert.strictEqual(s.round.streak, 0);
   });
 
+  it("sends trains from either tunnel and hits the vehicles in its path order", () => {
+    let now = 1_000_000;
+    const log: { type: string; payload: any }[] = [];
+    const round = new Round((type, payload) => log.push({ type, payload }), () => now, () => 0.25, undefined, () => [{ sid: "a", parkHp: 1000 }]);
+    assert.strictEqual(round.dir, 1, "rng < 0.5: eastbound");
+    const tick = (s: number) => {
+      for (let t = 0; t < s; t += 0.05) {
+        now += 50;
+        round.tick(0.05);
+      }
+    };
+    tick(ROUND.firstCountdown + 0.1);
+    assert.ok(round.head < -ROUND.mouth, "starts inside the west tunnel");
+    assert.strictEqual(log.find((l) => l.type === "round")!.payload.dir, 1);
+    round.park("a", { id: "east", spec: spec(1), x: 40, halfLen: 2 });
+    round.park("a", { id: "west", spec: spec(1), x: -40, halfLen: 2 });
+    tick(30);
+    assert.deepStrictEqual(log.filter((l) => l.type === "hit").map((l) => l.payload.id), ["west", "east"]);
+    assert.strictEqual(log.find((l) => l.type === "gone")!.payload.result, "through");
+  });
+
   it("pays everyone a room milestone", () => {
     const s = setup([{ sid: "a", parkHp: 1000 }]);
     s.round.stopped = FAIR.milestone.every - 1;
