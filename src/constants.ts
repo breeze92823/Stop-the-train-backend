@@ -1,5 +1,5 @@
 // Players per room. The deploy workflow greps this number (keep it 2-100, no seatCap).
-export const ROOM_MAX_CLIENTS = 50;
+export const ROOM_MAX_CLIENTS = 10;
 
 // Longest accepted strings.
 export const NAME_MAX = 64;
